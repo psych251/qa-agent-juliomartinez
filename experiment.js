@@ -1,20 +1,28 @@
 /*
- * Psych 251 experiment template: demo experiment.
+ * Stroop task (pilot), built on the Psych 251 template. The timeline is wired to DataSaver
+ * (src/save.js), which writes to your Firebase project.
  *
- * This file is the one you edit. It builds a jsPsych 8 timeline and wires it to DataSaver
- * (src/save.js), which writes to your Firebase project. Everything below is a working
- * example you can replace piece by piece:
+ * Design
+ *   IV        congruency (congruent vs incongruent), within-subjects. No between-subjects condition.
+ *   DVs       rt (ms) and correct, on rows with task "stroop". Each row also carries word, ink,
+ *             congruency, correct_key, response and timed_out.
+ *   Trials    6 practice trials with feedback (task "stroop_practice"), then 24 test trials:
+ *             12 congruent (each color word 4x) + 12 incongruent (each of the 6 mismatched
+ *             word/ink pairs 2x), so every ink, word and correct key appears 8 times.
+ *             500 ms fixation, then the word until a key press or 2000 ms.
+ *             Keys name the ink: R = red, G = green, B = blue.
+ *   Order     practice and test order are each fully randomized per participant.
+ *   Exclude   example criteria in analysis/analysis.Rmd (no responses, < 75% correct on test
+ *             trials, RTs under 200 ms). Replace them with the preregistered ones.
  *
- *   1. consent           course-wide consent text (required at the start of every study)
- *   2. instructions
- *   3. demographics      a multi-question survey page (jsPsych "survey" plugin, SurveyJS)
- *   4. framing task      a between-subjects manipulation with random assignment
- *   5. lexical decision  a short keyboard reaction-time block (trial-level data)
- *   6. feedback          Likert + free text
- *   7. debrief           saves data, then shows thanks or redirects to Prolific
- *
- * The example manipulation is the classic "Asian disease" framing problem
- * (Tversky & Kahneman, 1981): people are risk-averse for gains and risk-seeking for losses.
+ * Timeline
+ *   1. consent        course-wide consent text (required at the start of every study)
+ *   2. welcome
+ *   3. demographics   a multi-question survey page (jsPsych "survey" plugin, SurveyJS)
+ *   4. instructions   how the color task works
+ *   5. practice       6 trials, each followed by feedback
+ *   6. test           24 trials, no feedback
+ *   7. debrief        saves data, then shows thanks or redirects to Prolific
  */
 
 // ---------------------------------------------------------------------------
@@ -25,7 +33,7 @@ window.TEMPLATE_VERSION = "0.1.0";
 const EXPERIMENT = {
   // Firestore path: experiments/<id>/participants/... Change it when you start a new study
   // so pilot data and real data never mix (e.g. "smith2016-pilot-a", "smith2016-final").
-  id: "framing-demo",
+  id: "stroop-pilot-a",
 
   // Trials per Firestore write. 1 = save every trial the moment it finishes (dropouts leave
   // partial data). The free tier allows 20,000 writes/day: with 200 participants x 100 trials
@@ -43,12 +51,18 @@ const EXPERIMENT = {
   // Contact shown in consent and debrief.
   contact_email: "stanfordpsych251@gmail.com",
 
-  // Does this study need a physical keyboard? The demo does (the word task uses F and J).
+  // Does this study need a physical keyboard? This one does (the color task uses R, G and B).
   // On a phone or tablet no keyboard appears, so a participant cannot answer those trials;
   // they would time out silently and the session would still look complete. When true, such
   // devices are turned away before consent. Set to false if your study is buttons/touch only.
   requires_keyboard: true,
 };
+
+// Stroop colors: the ink shown for each color, and the key that names it.
+// The hex values are dark enough to read clearly on the white page.
+const INKS = { red: "#d00000", green: "#008000", blue: "#0033ff" };
+const KEYS = { red: "r", green: "g", blue: "b" };
+const COLORS = Object.keys(INKS);
 
 // True on anything with a mouse, trackpad, or stylus, including laptops with touchscreens.
 // False on phones and tablets without a pointing device, which are also the devices with no
@@ -142,12 +156,14 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
     experiment_id: EXPERIMENT.id,
   });
 
-  // Random assignment to a between-subjects condition, recorded on every trial and on the
-  // participant document. (For exact counterbalancing you would need a server; random
-  // assignment is fine at course sample sizes.)
-  const condition = jsPsych.randomization.sampleWithoutReplacement(["gain", "loss"], 1)[0];
-  jsPsych.data.addProperties({ condition: condition });
-  saver.updateParticipant({ condition: condition });
+  // No between-subjects condition: everyone does the same within-subjects task. Record the
+  // design and key mapping on every trial and on the participant document instead.
+  const participantFacts = {
+    design: "within-subjects",
+    key_mapping: COLORS.map((c) => KEYS[c] + "=" + c).join(","),
+  };
+  jsPsych.data.addProperties(participantFacts);
+  saver.updateParticipant(participantFacts);
 
   // -------------------------------------------------------------------------
   // 1. Consent (course-wide IRB text; edit only the contact address)
@@ -178,16 +194,16 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
   };
 
   // -------------------------------------------------------------------------
-  // 2. Instructions
+  // 2. Welcome
   // -------------------------------------------------------------------------
   const instructions = {
     type: jsPsychInstructions,
     pages: [
       `<h2>Welcome</h2>
-       <p>This short study has three parts: a few questions about you, one decision problem,
-       and a quick word task. It takes about three minutes.</p>`,
+       <p>This short study has two parts: a few questions about you, and a quick color-naming
+       task. It takes about four minutes.</p>`,
       `<p>Please complete the study in one sitting, in a quiet place, on a laptop or desktop
-       computer. Use the buttons or the arrow keys to move between pages.</p>`,
+       computer with a keyboard. Use the buttons or the arrow keys to move between pages.</p>`,
     ],
     show_clickable_nav: true,
     data: { task: "instructions" },
@@ -219,106 +235,110 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
   };
 
   // -------------------------------------------------------------------------
-  // 4. Framing problem (between-subjects: gain vs loss frame)
+  // 4. Stroop instructions
   // -------------------------------------------------------------------------
-  const framingText = {
-    gain: {
-      a: "If Program A is adopted, 200 people will be saved.",
-      b: "If Program B is adopted, there is a one-third probability that 600 people will be saved, and a two-thirds probability that no people will be saved.",
-    },
-    loss: {
-      a: "If Program A is adopted, 400 people will die.",
-      b: "If Program B is adopted, there is a one-third probability that nobody will die, and a two-thirds probability that 600 people will die.",
-    },
-  };
-  const framing = {
-    type: jsPsychHtmlButtonResponse,
-    stimulus: () => `
-      <div class="framing">
-        <p>Imagine that the country is preparing for the outbreak of an unusual disease, which is
-        expected to kill 600 people. Two alternative programs to combat the disease have been
-        proposed. Assume that the exact scientific estimates of the consequences of the programs
-        are as follows:</p>
-        <ul class="programs">
-          <li>${framingText[condition].a}</li>
-          <li>${framingText[condition].b}</li>
-        </ul>
-        <p>Which of the two programs would you favor?</p>
-      </div>`,
-    choices: ["Program A", "Program B"],
-    data: { task: "framing" },
-    on_finish: (data) => {
-      // Program A is the certain option in both frames; B is the risky gamble.
-      data.choice = data.response === 0 ? "certain" : "risky";
-    },
-  };
-
-  // -------------------------------------------------------------------------
-  // 5. Lexical decision (short RT block with trial-level logging)
-  // -------------------------------------------------------------------------
-  const ldInstructions = {
+  const stroopInstructions = {
     type: jsPsychInstructions,
     pages: [
-      `<h2>Word task</h2>
-       <p>You will see a string of letters. Press <strong>F</strong> if it is a real English word
-       and <strong>J</strong> if it is not. Respond as quickly and accurately as you can.
-       Place your fingers on F and J now.</p>`,
+      `<h2>Color task</h2>
+       <p>You will see the words RED, GREEN and BLUE printed in colored ink. Your job is to name
+       the <strong>ink color</strong> and ignore what the word says.</p>
+       <p>Press <strong>R</strong> for red ink, <strong>G</strong> for green ink and
+       <strong>B</strong> for blue ink.</p>
+       <p>For example, if you see <span class="example-word" style="color: ${INKS.red}">GREEN</span>,
+       press <strong>R</strong>, because the ink is red.</p>`,
+      `<p>Each word stays on the screen for up to 2 seconds. Respond as quickly and accurately as
+       you can.</p>
+       <p>You will start with 6 practice trials that tell you whether you were right. Place your
+       fingers on R, G and B now.</p>`,
     ],
     show_clickable_nav: true,
     data: { task: "instructions" },
   };
-  const ldItems = [
-    { word: "TABLE", is_word: true }, { word: "GARDEN", is_word: true },
-    { word: "PLANET", is_word: true }, { word: "SILVER", is_word: true },
-    { word: "FLIRP", is_word: false }, { word: "MANTOR", is_word: false },
-    { word: "BRENDLE", is_word: false }, { word: "TOSKIN", is_word: false },
-  ];
+
+  // -------------------------------------------------------------------------
+  // 5-6. Stroop practice and test
+  // -------------------------------------------------------------------------
+  const item = (word, ink) => ({
+    word: word,
+    ink: ink,
+    congruency: word === ink ? "congruent" : "incongruent",
+    correct_key: KEYS[ink],
+  });
+  const congruentItems = COLORS.map((c) => item(c, c));
+  const incongruentItems = COLORS.flatMap((w) => COLORS.filter((ink) => ink !== w).map((ink) => item(w, ink)));
+  // 12 congruent + 12 incongruent; every ink, word and correct key appears 8 times.
+  const testItems = jsPsych.randomization.repeat(congruentItems, 4)
+    .concat(jsPsych.randomization.repeat(incongruentItems, 2));
+  // Practice: each congruent item once, plus one incongruent item per ink (each word once).
+  const practiceItems = congruentItems.concat([item("red", "blue"), item("green", "red"), item("blue", "green")]);
+
+  // Shown under the fixation and the word alike, so the word appears exactly where the + was.
+  const keyReminder = '<p class="key-reminder">R = red &nbsp;&nbsp; G = green &nbsp;&nbsp; B = blue</p>';
   const fixation = {
     type: jsPsychHtmlKeyboardResponse,
     stimulus: '<div class="fixation">+</div>',
+    prompt: keyReminder,
     choices: "NO_KEYS",
     trial_duration: 500,
     data: { task: "fixation" },
   };
-  const ldTrial = {
+  const stroopTrial = (task) => ({
     type: jsPsychHtmlKeyboardResponse,
-    stimulus: () => `<div class="stimulus">${jsPsych.evaluateTimelineVariable("word")}</div>`,
-    choices: ["f", "j"],
-    trial_duration: 3000,
+    // data-ink lets the test robot read the answer without decoding colors.
+    stimulus: () => {
+      const ink = jsPsych.evaluateTimelineVariable("ink");
+      const word = jsPsych.evaluateTimelineVariable("word").toUpperCase();
+      return `<div class="stimulus" data-ink="${ink}" style="color: ${INKS[ink]}">${word}</div>`;
+    },
+    prompt: keyReminder,
+    choices: COLORS.map((c) => KEYS[c]),
+    trial_duration: 2000,
     data: {
-      task: "lexical_decision",
+      task: task,
       word: jsPsych.timelineVariable("word"),
-      is_word: jsPsych.timelineVariable("is_word"),
+      ink: jsPsych.timelineVariable("ink"),
+      congruency: jsPsych.timelineVariable("congruency"),
+      correct_key: jsPsych.timelineVariable("correct_key"),
     },
     on_finish: (data) => {
-      const expected = data.is_word ? "f" : "j";
-      data.correct = data.response === expected;
       data.timed_out = data.response === null;
+      // jsPsych accepts "R" for "r" but records the key as typed, so compare in lower case
+      // (otherwise Caps Lock would score every answer wrong).
+      data.correct = !data.timed_out && data.response.toLowerCase() === data.correct_key;
     },
+  });
+  const practiceFeedback = {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: () => {
+      const last = jsPsych.data.getLastTrialData().values()[0];
+      if (last.timed_out) return '<div class="feedback">Too slow. Please respond within 2 seconds.</div>';
+      if (last.correct) return '<div class="feedback">Correct</div>';
+      return `<div class="feedback">Incorrect. The ink was ${last.ink}, so the answer was ${last.correct_key.toUpperCase()}.</div>`;
+    },
+    choices: "NO_KEYS",
+    trial_duration: 1500,
+    data: { task: "stroop_feedback" },
   };
-  const lexicalDecision = {
-    timeline: [fixation, ldTrial],
-    timeline_variables: ldItems,
+  const practice = {
+    timeline: [fixation, stroopTrial("stroop_practice"), practiceFeedback],
+    timeline_variables: practiceItems,
     randomize_order: true,
   };
-
-  // -------------------------------------------------------------------------
-  // 6. Feedback
-  // -------------------------------------------------------------------------
-  const feedback = {
-    type: jsPsychSurveyLikert,
-    questions: [
-      {
-        prompt: "How clear were the instructions?", name: "instructions_clear", required: false,
-        labels: ["Very unclear", "Unclear", "Neutral", "Clear", "Very clear"],
-      },
+  const testStart = {
+    type: jsPsychInstructions,
+    pages: [
+      `<h2>Practice complete</h2>
+       <p>Now the real task: 24 words, without feedback. Keep naming the ink color as quickly
+       and accurately as you can.</p>`,
     ],
-    data: { task: "feedback_likert" },
+    show_clickable_nav: true,
+    data: { task: "instructions" },
   };
-  const comments = {
-    type: jsPsychSurveyText,
-    questions: [{ prompt: "Any comments about the study? (optional)", name: "comments", rows: 4 }],
-    data: { task: "feedback_text" },
+  const test = {
+    timeline: [fixation, stroopTrial("stroop")],
+    timeline_variables: testItems,
+    randomize_order: true,
   };
 
   // -------------------------------------------------------------------------
@@ -328,10 +348,11 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
     type: jsPsychHtmlButtonResponse,
     stimulus: `
       <h2>Debrief</h2>
-      <p>Thank you. In this study we tested whether describing the same outcomes as lives saved or
-      as lives lost changes which program people choose. Different participants saw different
-      wordings. If you have questions about this research, contact
-      <a href="mailto:${EXPERIMENT.contact_email}">${EXPERIMENT.contact_email}</a>.
+      <p>Thank you. This was a Stroop task. People are usually slower and make more mistakes
+      naming the ink color when the word names a different color (GREEN printed in red) than
+      when the two match (RED printed in red), because reading the word is hard to switch off.
+      We are measuring the size of that difference. If you have questions about this research,
+      contact <a href="mailto:${EXPERIMENT.contact_email}">${EXPERIMENT.contact_email}</a>.
       Press the button to save your responses and finish.</p>`,
     choices: ["Finish"],
     data: { task: "debrief" },
@@ -341,11 +362,10 @@ if (USE_EMULATOR && URL_PARAMS.get("cc")) EXPERIMENT.prolific_completion_code = 
     consent,
     instructions,
     demographics,
-    framing,
-    ldInstructions,
-    lexicalDecision,
-    feedback,
-    comments,
+    stroopInstructions,
+    practice,
+    testStart,
+    test,
     debrief,
   ]);
 })();

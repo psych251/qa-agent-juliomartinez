@@ -55,7 +55,7 @@ experiments/{experiment_id}/errors/…                      client-side error re
 
 Each page load writes its own participant document, named `<anonymous auth id>-<run id>`, so
 a reload or a second run in the same browser can never overwrite an earlier one. The participant document stores start/end times,
-completion, condition, Prolific ids, browser info, and (by default) the full jsPsych dataset
+completion, participant-level facts (design, key mapping), Prolific ids, browser info, and (by default) the full jsPsych dataset
 as a JSON string. Trials are also written incrementally in chunks (`chunk_size` in
 `experiment.js`), so a participant who closes the tab still leaves everything up to that point.
 
@@ -66,4 +66,4 @@ See `lib/VERSIONS.json`. To upgrade: change versions in `package.json`, `npm ins
 
 ## License
 
-MIT. The demo experiment is the "Asian disease" framing problem (Tversky & Kahneman, 1981).
+MIT. The experiment is a color-word Stroop task (Stroop, 1935).

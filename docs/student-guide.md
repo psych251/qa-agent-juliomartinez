@@ -211,11 +211,11 @@ The **config object** is six lines telling your page which Firebase project to t
 ### 2.6 Check that data arrives
 
 1. `npm start`, then reload <http://localhost:8000>. The red banner should be gone.
-2. Run through the whole demo to "All done".
+2. Run through the whole experiment to "All done".
 3. In the console sidebar go to **Project shortcuts → Firestore → Data** and click through
-   `experiments` → `framing-demo` → `participants` → the one document. It should show
-   `completed: true`, a `condition`, and a `trials` subcollection holding one document per
-   trial.
+   `experiments` → `stroop-pilot-a` → `participants` → the one document. It should show
+   `completed: true`, `design: "within-subjects"`, and a `trials` subcollection holding one
+   document per trial.
 
 Every page load counts as a new participant, so testing repeatedly is fine: each run gets
 its own record and never overwrites the last one.
@@ -310,7 +310,7 @@ script is you. It is the one real secret in this whole setup.
    filenames as a backstop, but do not rely on that: keep it out of the folder entirely.
 
 3. Export, where `--experiment` is the `id` from the `EXPERIMENT` block in `experiment.js`
-   (for the untouched demo that is `framing-demo`):
+   (here that is `stroop-pilot-a`):
 
    ```bash
    npm run export -- --experiment smith2016-final --key ~/keys/smith2016-abc123.json

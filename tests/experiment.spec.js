@@ -14,13 +14,36 @@ const { test, expect, devices } = require("@playwright/test");
 
 const EMULATOR = process.env.EMULATOR === "1" || !!process.env.FIRESTORE_EMULATOR_HOST;
 const PROJECT = "demo-psych251";
-const EXPERIMENT_ID = "framing-demo";
+const EXPERIMENT_ID = "stroop-pilot-a";
 const FS = `http://localhost:8080/v1/projects/${PROJECT}/databases/(default)/documents`;
 
-async function runThroughExperiment(page) {
+const KEY_FOR_INK = { red: "r", green: "g", blue: "b" };
+const WRONG_KEY_FOR_INK = { red: "g", green: "b", blue: "r" };
+
+// Plays n Stroop trials. plan[i] makes trial i "wrong", a "timeout", or "uppercase" (the right
+// key with Caps Lock on); every other trial is answered correctly. With withFeedback, checks
+// the practice feedback screen after each trial.
+async function playStroop(page, n, plan, withFeedback) {
+  for (let i = 0; i < n; i++) {
+    const stim = page.locator(".stimulus");
+    await stim.waitFor({ state: "visible" });
+    const ink = await stim.getAttribute("data-ink");
+    if (plan[i] === "wrong") await page.keyboard.press(WRONG_KEY_FOR_INK[ink]);
+    else if (plan[i] === "uppercase") await page.keyboard.press(KEY_FOR_INK[ink].toUpperCase());
+    else if (plan[i] !== "timeout") await page.keyboard.press(KEY_FOR_INK[ink]);
+    await stim.waitFor({ state: "detached" });
+    if (withFeedback) {
+      const expected = { wrong: /^Incorrect\. The ink was /, timeout: /^Too slow/ }[plan[i]] || /^Correct$/;
+      await expect(page.locator(".feedback")).toHaveText(expected);
+    }
+  }
+}
+
+// Plays from consent up to the debrief, without pressing Finish.
+async function runToDebrief(page) {
   // 1. consent
   await page.getByRole("button", { name: "I agree to participate" }).click();
-  // 2. instructions (two pages)
+  // 2. welcome (two pages)
   await page.locator("#jspsych-instructions-next").click();
   await page.locator("#jspsych-instructions-next").click();
   // 3. demographics (SurveyJS)
@@ -29,24 +52,20 @@ async function runThroughExperiment(page) {
   // SurveyJS boolean switches render "Yes" twice once toggled; scope to the question.
   await page.locator('[data-name="native_english"]').getByText("Yes", { exact: true }).first().click();
   await page.locator('input[value="Continue"]').click();
-  // 4. framing
-  await page.getByRole("button", { name: "Program A" }).click();
-  // 5. lexical decision: one instructions page, then 8 trials
+  // 4. Stroop instructions (two pages)
   await page.locator("#jspsych-instructions-next").click();
-  for (let i = 0; i < 8; i++) {
-    const stim = page.locator(".stimulus");
-    await stim.waitFor({ state: "visible" });
-    const word = (await stim.textContent()).trim();
-    const realWords = ["TABLE", "GARDEN", "PLANET", "SILVER"];
-    await page.keyboard.press(realWords.includes(word) ? "f" : "j");
-    await stim.waitFor({ state: "detached" });
-  }
-  // 6. feedback
-  await page.locator('input[name="Q0"][value="4"]').check();
-  await page.locator("#jspsych-survey-likert-next").click();
-  await page.locator("textarea").fill("Robot participant says hi.");
-  await page.locator("#jspsych-survey-text-next").click();
+  await page.locator("#jspsych-instructions-next").click();
+  // 5. practice: one wrong answer and one timeout, each with its own feedback
+  await playStroop(page, 6, { 0: "wrong", 1: "timeout" }, true);
+  // 6. "practice complete" page, then the test block
+  await page.locator("#jspsych-instructions-next").click();
+  await playStroop(page, 24, { 0: "wrong", 1: "timeout", 2: "uppercase" }, false);
   // 7. debrief
+  await expect(page.getByRole("button", { name: "Finish" })).toBeVisible();
+}
+
+async function runThroughExperiment(page) {
+  await runToDebrief(page);
   await page.getByRole("button", { name: "Finish" }).click();
   await expect(page.getByText("All done")).toBeVisible({ timeout: 30000 });
 }
@@ -104,12 +123,13 @@ test.describe("experiment", () => {
     expect(stats.writes_failed).toBe(0);
     await expect(page.locator("#data-saver-fallback")).toHaveCount(0);
 
-    // Participant document is complete and carries condition + Prolific ids.
+    // Participant document is complete and carries the design, key mapping and Prolific ids.
     const p = await fsGet(`experiments/${EXPERIMENT_ID}/participants/${uid}`);
     expect(p.status).toBe(200);
     const pdoc = decodeFields(p.body.fields);
     expect(pdoc.completed).toBe(true);
-    expect(["gain", "loss"]).toContain(pdoc.condition);
+    expect(pdoc.design).toBe("within-subjects");
+    expect(pdoc.key_mapping).toBe("r=red,g=green,b=blue");
     expect(pdoc.prolific_pid).toBe("robot123");
     expect(pdoc.n_trials).toBeGreaterThan(10);
     expect(typeof pdoc.full_data).toBe("string");
@@ -122,12 +142,35 @@ test.describe("experiment", () => {
     const docs = (chunks.body.documents || []).map((d) => decodeFields(d.fields));
     expect(docs.length).toBe(pdoc.n_trials);
     const trials = docs.flatMap((d) => d.trials);
-    const framing = trials.find((t) => t.task === "framing");
-    expect(framing.choice).toBe("certain");
-    expect(framing.condition).toBe(pdoc.condition);
-    const ld = trials.filter((t) => t.task === "lexical_decision");
-    expect(ld.length).toBe(8);
-    expect(ld.every((t) => t.correct === true)).toBe(true);
+
+    // Test block: 24 trials, balanced on congruency, ink and word.
+    const stroop = trials.filter((t) => t.task === "stroop");
+    expect(stroop.length).toBe(24);
+    expect(stroop.filter((t) => t.congruency === "congruent").length).toBe(12);
+    expect(stroop.every((t) => (t.congruency === "congruent") === (t.word === t.ink))).toBe(true);
+    for (const c of ["red", "green", "blue"]) {
+      expect(stroop.filter((t) => t.ink === c).length, "ink " + c).toBe(8);
+      expect(stroop.filter((t) => t.word === c).length, "word " + c).toBe(8);
+    }
+    expect(stroop.every((t) => t.correct_key === KEY_FOR_INK[t.ink])).toBe(true);
+    // The robot's one timeout, one wrong answer, and one Caps Lock answer are scored right.
+    const timedOut = stroop.filter((t) => t.timed_out);
+    expect(timedOut.length).toBe(1);
+    expect(timedOut[0]).toMatchObject({ response: null, rt: null, correct: false });
+    const wrong = stroop.filter((t) => !t.timed_out && !t.correct);
+    expect(wrong.length).toBe(1);
+    expect(wrong[0].response).not.toBe(wrong[0].correct_key);
+    const upper = stroop.filter((t) => t.response && t.response !== t.response.toLowerCase());
+    expect(upper.length).toBe(1);
+    expect(upper[0].correct).toBe(true);
+    expect(stroop.filter((t) => t.correct).length).toBe(22);
+    expect(stroop.filter((t) => t.correct).every((t) => typeof t.rt === "number")).toBe(true);
+
+    // Practice: 6 trials, each followed by a feedback screen.
+    expect(trials.filter((t) => t.task === "stroop_practice").length).toBe(6);
+    expect(trials.filter((t) => t.task === "stroop_feedback").length).toBe(6);
+    expect(trials.every((t) => t.design === "within-subjects")).toBe(true);
+
     const demo = trials.find((t) => t.task === "demographics");
     expect(demo.response.age).toBe(34);
 
@@ -164,20 +207,7 @@ test.describe("experiment", () => {
     // Run the real flow up to the last click, then cut the connection before "Finish".
     await page.goto("/?emulator=1");
     await page.waitForFunction(() => window.__saver && window.__saver.uid);
-    await page.getByRole("button", { name: "I agree to participate" }).click();
-    await page.locator("#jspsych-instructions-next").click();
-    await page.locator("#jspsych-instructions-next").click();
-    await page.locator('input[value="Continue"]').click();
-    await page.getByRole("button", { name: "Program B" }).click();
-    await page.locator("#jspsych-instructions-next").click();
-    for (let i = 0; i < 8; i++) {
-      const stim = page.locator(".stimulus");
-      await stim.waitFor({ state: "visible" });
-      await page.keyboard.press("f");
-      await stim.waitFor({ state: "detached" });
-    }
-    await page.locator("#jspsych-survey-likert-next").click();
-    await page.locator("#jspsych-survey-text-next").click();
+    await runToDebrief(page);
     await context.setOffline(true);
     await page.getByRole("button", { name: "Finish" }).click();
     await expect(page.locator("#data-saver-fallback")).toBeVisible({ timeout: 40000 });

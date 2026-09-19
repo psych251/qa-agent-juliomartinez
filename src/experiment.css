@@ -3,9 +3,10 @@
 .jspsych-content h1, .jspsych-content h2 { text-align: center; }
 .consent { font-size: 15px; line-height: 1.5; }
 .consent .buttons { text-align: center; }
-.stimulus { font-size: 44px; text-align: center; font-family: monospace; letter-spacing: 0.05em; }
-.fixation { font-size: 44px; text-align: center; }
-.framing { font-size: 18px; line-height: 1.6; }
-.framing .programs { margin: 1em 0; padding-left: 1.2em; }
+/* Fixation and Stroop word share a size so the word appears exactly where the + was. */
+.stimulus, .fixation { font: bold 64px/1.2 Arial, Helvetica, sans-serif; text-align: center; }
+.example-word { font-weight: bold; }
+.key-reminder { color: #666; font-size: 15px; text-align: center; margin-top: 2em; }
+.feedback { font-size: 24px; text-align: center; }
 #jspsych-html-button-response-btngroup { text-align: center; }
 .thanks { text-align: center; }

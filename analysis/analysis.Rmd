@@ -1,5 +1,5 @@
 ---
-title: "Analysis: framing demo"
+title: "Analysis: Stroop pilot"
 author: "Your name"   # <- put your name here
 date: "`r Sys.Date()`"
 output:
@@ -14,8 +14,8 @@ library(tidyverse)
 library(jsonlite)
 ```
 
-This notebook reads the CSVs written by `npm run export -- --experiment framing-demo`
-and runs the planned analyses for the demo experiment. Set `experiment_id` in the first
+This notebook reads the CSVs written by `npm run export -- --experiment stroop-pilot-a`
+and runs the planned analyses for the Stroop task. Set `experiment_id` in the first
 code chunk below to match `EXPERIMENT.id` in `experiment.js`, and put your name in the
 `author:` line at the top of this file. Replace the sections below with
 the confirmatory analysis you preregistered; keep exploratory analyses clearly separated.
@@ -26,7 +26,7 @@ the confirmatory analysis you preregistered; keep exploratory analyses clearly s
 Columns that hold objects (for example the survey plugin's `response`) are JSON strings.
 
 ```{r load}
-experiment_id <- "framing-demo"
+experiment_id <- "stroop-pilot-a"
 raw_dir <- file.path("..", "data", "raw", experiment_id)
 
 participants <- read_csv(file.path(raw_dir, "participants.csv"), show_col_types = FALSE)
@@ -44,24 +44,28 @@ Document every exclusion. Record how many participants each rule removes.
 n_started <- nrow(participants)
 complete <- participants |> filter(completed)
 
-# Example attention/performance criterion: at least 6 of 8 lexical decision trials correct.
-# Replace this with the criterion you preregistered.
-ld_accuracy <- trials |>
-  filter(task == "lexical_decision") |>
+# Test trials only. Practice trials (task "stroop_practice") are never analyzed.
+stroop_all <- trials |>
+  filter(task == "stroop") |>
+  mutate(correct = as.logical(correct), timed_out = as.logical(timed_out), rt = as.numeric(rt))
+
+# Example performance criterion: at least 75% of test trials correct (timeouts count as
+# errors). Replace this with the criterion you preregistered.
+stroop_accuracy <- stroop_all |>
   group_by(participant_id) |>
   summarise(
-    ld_acc = mean(as.logical(correct), na.rm = TRUE),
-    ld_all_timed_out = all(as.logical(timed_out)),
+    acc = mean(correct, na.rm = TRUE),
+    all_timed_out = all(timed_out),
     .groups = "drop"
   )
 
 # A participant who never answered a single speeded trial did not really take part: this
 # is what a phone or tablet produces, and what an abandoned-but-left-open tab produces.
 keep <- complete |>
-  left_join(ld_accuracy, by = "participant_id") |>
-  filter(!is.na(ld_acc), !ld_all_timed_out, ld_acc >= 0.75)
+  left_join(stroop_accuracy, by = "participant_id") |>
+  filter(!is.na(acc), !all_timed_out, acc >= 0.75)
 
-# Funnel by condition. `.drop = FALSE` on a factor keeps zero rows visible: a step that
+# Exclusion funnel. `.drop = FALSE` on a factor keeps zero rows visible: a step that
 # removes everyone must show as 0, not vanish from the table.
 funnel_levels <- c("started", "completed", "passed accuracy criterion")
 bind_rows(
@@ -70,16 +74,14 @@ bind_rows(
   keep |> mutate(step = "passed accuracy criterion")
 ) |>
   mutate(step = factor(step, levels = funnel_levels)) |>
-  count(step, condition, .drop = FALSE) |>
-  pivot_wider(names_from = condition, values_from = n, values_fill = 0) |>
-  arrange(step)
+  count(step, .drop = FALSE)
 
 message("Participants: ", n_started, " started / ", nrow(complete), " completed / ",
         nrow(keep), " kept for analysis.")
 
 # Participants excluded because they never responded to a speeded trial (e.g. no keyboard).
-n_no_response <- complete |> left_join(ld_accuracy, by = "participant_id") |>
-  filter(ld_all_timed_out %in% TRUE) |> nrow()
+n_no_response <- complete |> left_join(stroop_accuracy, by = "participant_id") |>
+  filter(all_timed_out %in% TRUE) |> nrow()
 if (n_no_response > 0) {
   message("Note: ", n_no_response,
           " completed session(s) had no response on any speeded trial. Check whether they ",
@@ -109,90 +111,83 @@ demo |> summarise(n = n(), mean_age = mean(age, na.rm = TRUE), sd_age = sd(age, 
 demo |> count(gender)
 ```
 
-## Confirmatory analysis: framing effect
+## Confirmatory analysis: Stroop effect
 
-Key test (preregistered): proportion choosing the risky program (B) is higher in the loss
-frame than in the gain frame. Chi-square test of independence on the 2 x 2 table.
+Key test (example; replace it with the one you preregistered): responses are slower on
+incongruent than on congruent trials. For each participant, take the mean RT of correct test
+trials in each condition, dropping anticipations under 200 ms (timeouts have no RT). Then
+run a paired t-test on the per-participant difference, incongruent minus congruent.
 
-```{r framing}
-framing <- trials |>
-  filter(task == "framing", participant_id %in% keep$participant_id) |>
-  select(participant_id, condition, choice)
+```{r stroop}
+rt_trials <- stroop_all |>
+  filter(participant_id %in% keep$participant_id, correct, !is.na(rt), rt >= 200)
+n_correct <- stroop_all |> filter(participant_id %in% keep$participant_id, correct) |> nrow()
+message("RT analysis uses ", nrow(rt_trials), " of ", n_correct,
+        " correct test trials (the rest were under 200 ms).")
 
-framing_counts <- framing |> count(condition, choice) |>
-  group_by(condition) |> mutate(prop = n / sum(n)) |> ungroup()
-framing_counts
+# One row per participant. A participant with no usable trial in one condition gets NaN
+# there and is dropped, rather than silently counted with half the data.
+stroop_effect <- rt_trials |>
+  group_by(participant_id) |>
+  summarise(
+    congruent = mean(rt[congruency == "congruent"]),
+    incongruent = mean(rt[congruency == "incongruent"]),
+    .groups = "drop"
+  ) |>
+  mutate(effect = incongruent - congruent) |>
+  filter(!is.na(effect))
 
-tab <- table(framing$condition, framing$choice)
-tab
+stroop_effect |>
+  summarise(n = n(), mean_congruent = mean(congruent), mean_incongruent = mean(incongruent),
+            mean_effect = mean(effect), sd_effect = sd(effect))
 
-if (all(dim(tab) == c(2, 2)) && all(rowSums(tab) > 0)) {
-  print(chisq.test(tab))
-} else {
-  message("Chi-square not run: the frame-by-choice table is ",
-          paste(dim(tab), collapse = " x "),
-          ". It needs both frames and both choices to be present. ",
-          "With ", nrow(framing), " participant(s) in the analysis set this is expected; ",
-          "come back once you have more data.")
-}
-
-# Effect size with a confidence interval: the difference in the proportion choosing the
-# risky program (loss minus gain). Compare this interval with the original effect, not
-# just the p value.
-risky <- framing |>
-  group_by(condition) |>
-  summarise(risky = sum(choice == "risky"), n = n(), .groups = "drop")
-risky
-
-have_both <- all(c("gain", "loss") %in% risky$condition)
-if (have_both && all(risky$n > 0)) {
-  # Index each frame explicitly. Do NOT write risky$risky[risky$condition == c("loss","gain")]:
-  # that compares element by element, silently returns nothing, and prop.test then fails.
-  loss <- risky[risky$condition == "loss", ]
-  gain <- risky[risky$condition == "gain", ]
-  pt <- prop.test(x = c(loss$risky, gain$risky), n = c(loss$n, gain$n), correct = FALSE)
-  print(pt)
+if (nrow(stroop_effect) >= 2) {
+  tt <- t.test(stroop_effect$incongruent, stroop_effect$congruent, paired = TRUE)
+  print(tt)
+  # Effect size with a confidence interval, plus d_z (mean difference / SD of differences)
+  # for comparison with the original study. Compare intervals, not just p values.
   tibble(
-    prop_risky_loss = loss$risky / loss$n,
-    prop_risky_gain = gain$risky / gain$n,
-    difference_loss_minus_gain = unname(pt$estimate[1] - pt$estimate[2]),
-    ci_low = pt$conf.int[1],
-    ci_high = pt$conf.int[2]
+    effect_ms = unname(tt$estimate),
+    ci_low = tt$conf.int[1],
+    ci_high = tt$conf.int[2],
+    d_z = mean(stroop_effect$effect) / sd(stroop_effect$effect)
   )
 } else {
-  message("Proportion difference not computed: need at least one kept participant in each ",
-          "frame (have ", paste(paste0(risky$condition, "=", risky$n), collapse = ", "), ").")
+  message("Paired t-test not run: it needs at least two kept participants with usable ",
+          "trials in both conditions (have ", nrow(stroop_effect), "). ",
+          "With pilot data this is expected; come back once you have more data.")
 }
 
-if (nrow(framing_counts) > 0) {
-  ggplot(framing_counts, aes(x = condition, y = prop, fill = choice)) +
-    geom_col() +
-    labs(x = "Frame", y = "Proportion of choices", fill = "Choice",
-         title = paste0("Framing effect (n = ", nrow(framing), ")")) +
+if (nrow(stroop_effect) > 0) {
+  stroop_effect |>
+    pivot_longer(c(congruent, incongruent), names_to = "congruency", values_to = "mean_rt") |>
+    ggplot(aes(x = congruency, y = mean_rt)) +
+    geom_line(aes(group = participant_id), alpha = 0.3) +
+    stat_summary(fun = mean, geom = "point", size = 3) +
+    labs(x = "Congruency", y = "Mean correct RT (ms)",
+         title = paste0("Stroop effect (n = ", nrow(stroop_effect), ")")) +
     theme_minimal()
 } else {
-  message("No framing data to plot yet.")
+  message("No Stroop RT data to plot yet.")
 }
 ```
 
-## Exploratory: lexical decision RTs
+## Exploratory: accuracy and RT distributions
 
-```{r rt}
-ld <- trials |>
-  filter(task == "lexical_decision", participant_id %in% keep$participant_id) |>
-  mutate(correct = as.logical(correct), is_word = as.logical(is_word), rt = as.numeric(rt))
+```{r exploratory}
+kept_trials <- stroop_all |> filter(participant_id %in% keep$participant_id)
 
-ld_correct <- ld |> filter(correct, !is.na(rt))
-
-if (nrow(ld_correct) > 0) {
-  print(ld_correct |> group_by(is_word) |>
-          summarise(mean_rt = mean(rt), sd_rt = sd(rt), n = n(), .groups = "drop"))
-  ggplot(ld_correct, aes(x = rt, fill = is_word)) +
+if (nrow(kept_trials) > 0) {
+  print(kept_trials |>
+          group_by(congruency) |>
+          summarise(accuracy = mean(correct), timeouts = sum(timed_out), trials = n(),
+                    .groups = "drop"))
+  ggplot(rt_trials, aes(x = rt, fill = congruency)) +
     geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
-    labs(x = "RT (ms)", fill = "Real word") +
+    labs(x = "RT (ms), correct trials", fill = "Congruency") +
     theme_minimal()
 } else {
-  message("No correct lexical-decision trials with a response time yet.")
+  message("No test trials from kept participants yet.")
 }
 ```
 
